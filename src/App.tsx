@@ -58,7 +58,7 @@ const itemVariants = {
 function App() {
   const [kpiData, setKpiData] = useState(defaultKpiData);
   const [chartData, setChartData] = useState(defaultChartData);
-  const [recentActivity, setRecentActivity] = useState(defaultRecentActivity);
+  const [recentActivity, setRecentActivity] = useState<any[]>(defaultRecentActivity);
   const [allActivity, setAllActivity] = useState<any[]>([]);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -82,29 +82,39 @@ function App() {
         };
 
         // 1. Obtener ejecuciones con paginación si es necesario
-        let allExecutions: any[] = [];
-        let cursor: string | undefined = undefined;
-        const maxPages = timeFilter === "Mes pasado" ? 10 : 2; // Hasta 1000 o 200 ejecuciones
-        const targetDays = timeFilter === "Mes pasado" ? 30 : 7;
+        let limit = 250;
+        let targetDays = 7;
+        let maxPages = 20;
 
-        for (let i = 0; i < maxPages; i++) {
-          const url = `/n8n-proxy/api/v1/executions?limit=100${cursor ? `&cursor=${cursor}` : ''}`;
-          const execResponse = await fetch(url, { headers });
-          if (!execResponse.ok) break;
-          
-          const execData = await execResponse.json();
-          const batch = execData.data || [];
+        if (timeFilter === "Hoy") targetDays = 1;
+        if (timeFilter === "Este mes" || timeFilter === "Mes pasado") {
+          targetDays = 30;
+          maxPages = 25; 
+        }
+
+        let allExecutions: any[] = [];
+        let cursor: string | null = null;
+        let pagesFetched = 0;
+
+        while (pagesFetched < maxPages) {
+          const url = `/n8n-proxy/api/v1/executions?limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`;
+          const response = await fetch(url, { headers });
+          if (!response.ok) break;
+
+          const data = await response.json();
+          const batch = data.data || [];
           allExecutions = [...allExecutions, ...batch];
-          
-          cursor = execData.nextCursor;
+          cursor = data.nextCursor;
+          pagesFetched++;
+
           if (!cursor || batch.length === 0) break;
 
-          // Verificar si ya llegamos a la fecha límite
+          // Si ya tenemos suficientes datos para el rango de días (con margen)
           const lastInBatch = batch[batch.length - 1];
           if (lastInBatch.startedAt) {
             const lastDate = new Date(lastInBatch.startedAt);
             const diffDays = (new Date().getTime() - lastDate.getTime()) / (1000 * 3600 * 24);
-            if (diffDays > targetDays + 2) break; // Margen de 2 días
+            if (diffDays > targetDays + 5) break; 
           }
         }
 
@@ -143,8 +153,8 @@ function App() {
           if (e.status === 'waiting' || e.status === 'running') st = 'warning';
 
           return {
-            id: e.id,
-            task: wfMap.get(e.workflowId) || `Flujo ID: ${e.workflowId}`,
+            id: String(e.id),
+            task: String(wfMap.get(e.workflowId) || `Flujo ID: ${e.workflowId}`),
             time: timeStr,
             status: st,
             startedAt: e.startedAt
