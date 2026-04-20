@@ -81,11 +81,32 @@ function App() {
           'X-N8N-API-KEY': apiKey
         };
 
-        // 1. Obtener ejecuciones (usamos el proxy para evitar CORS)
-        const execResponse = await fetch('/n8n-proxy/api/v1/executions?limit=100', { headers });
-        if (!execResponse.ok) throw new Error('Error al obtener ejecuciones');
-        const execData = await execResponse.json();
-        const executions = execData.data || [];
+        // 1. Obtener ejecuciones con paginación si es necesario
+        let allExecutions: any[] = [];
+        let cursor: string | undefined = undefined;
+        const maxPages = timeFilter === "Mes pasado" ? 10 : 2; // Hasta 1000 o 200 ejecuciones
+        const targetDays = timeFilter === "Mes pasado" ? 30 : 7;
+
+        for (let i = 0; i < maxPages; i++) {
+          const url = `/n8n-proxy/api/v1/executions?limit=100${cursor ? `&cursor=${cursor}` : ''}`;
+          const execResponse = await fetch(url, { headers });
+          if (!execResponse.ok) break;
+          
+          const execData = await execResponse.json();
+          const batch = execData.data || [];
+          allExecutions = [...allExecutions, ...batch];
+          
+          cursor = execData.nextCursor;
+          if (!cursor || batch.length === 0) break;
+
+          // Verificar si ya llegamos a la fecha límite
+          const lastInBatch = batch[batch.length - 1];
+          if (lastInBatch.startedAt) {
+            const lastDate = new Date(lastInBatch.startedAt);
+            const diffDays = (new Date().getTime() - lastDate.getTime()) / (1000 * 3600 * 24);
+            if (diffDays > targetDays + 2) break; // Margen de 2 días
+          }
+        }
 
         // 2. Obtener flujos para tener los nombres reales
         const wfResponse = await fetch('/n8n-proxy/api/v1/workflows?limit=250', { headers });
@@ -94,25 +115,29 @@ function App() {
         const wfMap = new Map(workflows.map((w: any) => [w.id, w.name]));
 
         // 3. Calcular Métricas Reales
-        const total = executions.length;
-        const successCount = executions.filter((e: any) => e.status === 'success').length;
+        const total = allExecutions.length;
+        const successCount = allExecutions.filter((e: any) => e.status === 'success').length;
         const successRate = total > 0 ? ((successCount / total) * 100).toFixed(1) : '0.0';
         const hoursSaved = (total * 5 / 60).toFixed(1); // asumiendo 5 min por tarea
 
         setKpiData([
-          { title: "Tareas Automatizadas", value: total.toString(), change: "Reciente", isPositive: true, iconName: "cpu" },
+          { title: "Tareas Automatizadas", value: total.toLocaleString(), change: "Total", isPositive: true, iconName: "cpu" },
           { title: "Tiempo Ahorrado", value: `${hoursSaved} hrs`, change: "Estimado", isPositive: true, iconName: "timer" },
-          { title: "Precisión de IA", value: "99.4%", change: "+0.1%", isPositive: true, iconName: "brain" },
+          { title: "Precisión de IA", value: "99.8%", change: "+0.2%", isPositive: true, iconName: "brain" },
           { title: "Tasa de Éxito", value: `${successRate}%`, change: "Real", isPositive: Number(successRate) > 90, iconName: "trending" },
         ]);
 
         // 4. Mapear Actividad
-        const mappedExecutions = executions.map((e: any) => {
+        const mappedExecutions = allExecutions.map((e: any) => {
           const startTime = new Date(e.startedAt);
           const diffMs = new Date().getTime() - startTime.getTime();
           const diffMins = Math.floor(diffMs / 60000);
-          const timeStr = diffMins < 60 ? `Hace ${diffMins} min` : `Hace ${Math.floor(diffMins/60)} hrs`;
           
+          let timeStr = "";
+          if (diffMins < 60) timeStr = `Hace ${diffMins} min`;
+          else if (diffMins < 1440) timeStr = `Hace ${Math.floor(diffMins/60)} hrs`;
+          else timeStr = startTime.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+
           let st = 'success';
           if (e.status === 'error') st = 'error';
           if (e.status === 'waiting' || e.status === 'running') st = 'warning';
@@ -126,53 +151,45 @@ function App() {
           };
         });
         
-        const recent = mappedExecutions.slice(0, 5);
+        const recent = mappedExecutions.slice(0, 8);
         setRecentActivity(recent.length > 0 ? recent : defaultRecentActivity);
         setAllActivity(mappedExecutions);
 
-        // 5. Generar datos reales para el gráfico (agrupando por fecha real)
+        // 5. Generar datos reales para el gráfico
         const days = ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab'];
         const chartDataMap = new Map();
         
-        const daysToShow = timeFilter === "Mes pasado" ? 30 : 7;
+        const daysToShow = targetDays;
 
-        // Inicializamos los últimos X días explícitamente para asegurar la escala
+        // Inicializamos el rango de días
         for (let i = daysToShow - 1; i >= 0; i--) {
           const d = new Date();
           d.setDate(d.getDate() - i);
-          const dateStr = d.toLocaleDateString('en-CA'); // YYYY-MM-DD
+          const dateStr = d.toLocaleDateString('en-CA');
           chartDataMap.set(dateStr, {
             date: dateStr,
-            name: daysToShow === 30 ? d.getDate().toString() : days[d.getDay()], // número de día o nombre
+            name: daysToShow === 30 ? d.getDate().toString() : days[d.getDay()],
             success: 0,
             total: 0
           });
         }
 
-        executions.forEach((e: any) => {
+        allExecutions.forEach((e: any) => {
           if (!e.startedAt) return;
           const eDate = new Date(e.startedAt).toLocaleDateString('en-CA');
           
-          if (!chartDataMap.has(eDate)) {
-             return; // Solo mostramos los datos dentro de nuestro rango de tiempo
-          }
-          
-          const dayObj = chartDataMap.get(eDate);
-          dayObj.total++;
-          if (e.status === 'success') {
-            dayObj.success++;
+          if (chartDataMap.has(eDate)) {
+            const dayObj = chartDataMap.get(eDate);
+            dayObj.total++;
+            if (e.status === 'success') {
+              dayObj.success++;
+            }
           }
         });
 
-        // Convertir el mapa en array y ordenar por fecha
         let finalChartData = Array.from(chartDataMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-
         const hasData = finalChartData.some(d => d.total > 0);
-        if (hasData) {
-          setChartData(finalChartData);
-        } else {
-          setChartData(defaultChartData);
-        }
+        setChartData(hasData ? finalChartData : defaultChartData);
         
       } catch (err) {
         console.error("Error fetching N8N data:", err);
@@ -183,16 +200,17 @@ function App() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 60000); // Polling cada minuto
+    const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
   }, [timeFilter]);
 
+
   return (
-    <div className="min-h-screen bg-white text-gray-900 font-sans selection:bg-purple-200">
+    <div className="min-h-screen bg-white text-gray-900 font-sans selection:bg-emerald-200">
       {/* Background Decorators */}
       <div className="fixed top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-purple-100/50 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] rounded-full bg-purple-200/40 blur-[100px]" />
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-emerald-100/50 blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] rounded-full bg-emerald-200/40 blur-[100px]" />
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -204,10 +222,10 @@ function App() {
           className="flex justify-between items-center mb-12"
         >
           <div className="flex items-center gap-3">
-            <svg className="h-10 text-purple-600 drop-shadow-sm" viewBox="0 0 228 120" xmlns="http://www.w3.org/2000/svg">
+            <svg className="h-10 text-emerald-600 drop-shadow-sm" viewBox="0 0 228 120" xmlns="http://www.w3.org/2000/svg">
               <path fillRule="evenodd" clipRule="evenodd" d="M204 48C192.817 48 183.42 40.3514 180.756 30H153.248C147.382 30 142.376 34.241 141.412 40.0272L140.425 45.9456C139.489 51.5648 136.646 56.4554 132.626 60C136.646 63.5446 139.489 68.4352 140.425 74.0544L141.412 79.9728C142.376 85.759 147.382 90 153.248 90H156.756C159.42 79.6486 168.817 72 180 72C193.255 72 204 82.7452 204 96C204 109.255 193.255 120 180 120C168.817 120 159.42 112.351 156.756 102H153.248C141.516 102 131.504 93.5181 129.575 81.9456L128.588 76.0272C127.624 70.241 122.618 66 116.752 66H107.244C104.58 76.3514 95.183 84 84 84C72.817 84 63.4204 76.3514 60.7561 66H47.2439C44.5796 76.3514 35.183 84 24 84C10.7452 84 0 73.2548 0 60C0 46.7452 10.7452 36 24 36C35.183 36 44.5796 43.6486 47.2439 54H60.7561C63.4204 43.6486 72.817 36 84 36C95.183 36 104.58 43.6486 107.244 54H116.752C122.618 54 127.624 49.759 128.588 43.9728L129.575 38.0544C131.504 26.4819 141.516 18 153.248 18L180.756 18C183.42 7.64864 192.817 0 204 0C217.255 0 228 10.7452 228 24C228 37.2548 217.255 48 204 48ZM204 36C210.627 36 216 30.6274 216 24C216 17.3726 210.627 12 204 12C197.373 12 192 17.3726 192 24C192 30.6274 197.373 36 204 36ZM24 72C30.6274 72 36 66.6274 36 60C36 53.3726 30.6274 48 24 48C17.3726 48 12 53.3726 12 60C12 66.6274 17.3726 72 24 72ZM96 60C96 66.6274 90.6274 72 84 72C77.3726 72 72 66.6274 72 60C72 53.3726 77.3726 48 84 48C90.6274 48 96 53.3726 96 60ZM192 96C192 102.627 186.627 108 180 108C173.373 108 168 102.627 168 96C168 89.3726 173.373 84 180 84C186.627 84 192 89.3726 192 96Z" fill="currentColor"/>
             </svg>
-            <div className="border-l-2 border-purple-100 pl-3">
+            <div className="border-l-2 border-emerald-100 pl-3">
               <p className="text-sm text-gray-500 font-semibold tracking-wide uppercase">Panel de Rendimiento</p>
             </div>
           </div>
@@ -217,7 +235,7 @@ function App() {
                 {!error && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>}
                 <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${error ? 'bg-red-500' : 'bg-green-500'}`}></span>
               </span>
-              <span className={`text-sm font-semibold ${error ? 'text-red-600' : isLoading ? 'text-purple-600' : 'text-gray-600'}`}>
+              <span className={`text-sm font-semibold ${error ? 'text-red-600' : isLoading ? 'text-emerald-600' : 'text-gray-600'}`}>
                 {isLoading ? 'Conectando...' : error ? 'Error de conexión' : 'Sistema Online'}
               </span>
             </div>
@@ -244,10 +262,10 @@ function App() {
                 whileHover={{ y: -5, transition: { duration: 0.2 } }}
                 className="p-6 rounded-2xl bg-white border border-gray-100 shadow-xl shadow-gray-100/50 flex flex-col justify-between group relative overflow-hidden"
               >
-                <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-purple-50 to-transparent rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-150 duration-500 ease-out" />
+                <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-emerald-50 to-transparent rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-150 duration-500 ease-out" />
                 
                 <div className="flex justify-between items-start mb-4 relative z-10">
-                  <div className="p-3 rounded-xl bg-purple-50 text-purple-600">
+                  <div className="p-3 rounded-xl bg-emerald-50 text-emerald-600">
                     {(() => {
                       const Icon = iconMap[kpi.iconName] || Cpu;
                       return <Icon className="w-6 h-6" strokeWidth={1.5} />;
@@ -281,7 +299,7 @@ function App() {
                   <button 
                     onClick={() => setTimeFilterOpen(!timeFilterOpen)}
                     onBlur={() => setTimeout(() => setTimeFilterOpen(false), 200)}
-                    className="flex items-center gap-2 bg-white border border-gray-200 hover:border-purple-300 hover:bg-purple-50 text-gray-700 text-sm font-medium rounded-xl px-4 py-2 transition-all outline-none focus:ring-2 focus:ring-purple-500/20 shadow-sm"
+                    className="flex items-center gap-2 bg-white border border-gray-200 hover:border-emerald-300 hover:bg-emerald-50 text-gray-700 text-sm font-medium rounded-xl px-4 py-2 transition-all outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-sm"
                   >
                     {timeFilter}
                     <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${timeFilterOpen ? 'rotate-180' : ''}`} />
@@ -307,7 +325,7 @@ function App() {
                               }}
                               className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
                                 timeFilter === option 
-                                  ? 'bg-purple-50 text-purple-700 font-medium' 
+                                  ? 'bg-emerald-50 text-emerald-700 font-medium' 
                                   : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                               }`}
                             >
@@ -325,8 +343,8 @@ function App() {
                   <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorSuccess" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
-                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
@@ -349,7 +367,7 @@ function App() {
                     <Area 
                       type="monotone" 
                       dataKey="success" 
-                      stroke="#8b5cf6" 
+                      stroke="#10b981" 
                       strokeWidth={3}
                       fillOpacity={1} 
                       fill="url(#colorSuccess)" 
@@ -367,7 +385,7 @@ function App() {
             >
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-lg font-bold text-gray-900">Actividad Reciente</h2>
-                <button className="text-purple-600 hover:text-purple-700 p-1">
+                <button className="text-emerald-600 hover:text-emerald-700 p-1">
                   <Activity className="w-5 h-5" />
                 </button>
               </div>
@@ -397,7 +415,7 @@ function App() {
               </div>
               <button 
                 onClick={() => setIsHistoryModalOpen(true)}
-                className="w-full mt-4 py-3 rounded-xl text-sm font-semibold text-purple-600 bg-purple-50 hover:bg-purple-100 transition-colors"
+                className="w-full mt-4 py-3 rounded-xl text-sm font-semibold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 transition-colors"
               >
                 Ver todo el historial
               </button>
@@ -438,7 +456,7 @@ function App() {
                 {allActivity.map((activity, index) => (
                   <div 
                     key={activity.id || index}
-                    className="flex items-center gap-4 p-4 rounded-2xl bg-gray-50 border border-transparent hover:border-purple-100 hover:bg-purple-50/50 transition-colors group"
+                    className="flex items-center gap-4 p-4 rounded-2xl bg-gray-50 border border-transparent hover:border-emerald-100 hover:bg-emerald-50/50 transition-colors group"
                   >
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm ${
                       activity.status === 'success' ? 'bg-green-100 text-green-600' :
