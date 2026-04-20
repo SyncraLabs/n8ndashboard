@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { 
   Cpu, Timer, BrainCircuit, TrendingUp, Activity, 
-  ChevronRight, ChevronDown, Server, AlertTriangle, CheckCircle, Bot, X
+  ChevronRight, ChevronDown, Server, AlertTriangle, CheckCircle, X
 } from 'lucide-react';
 
 const iconMap: Record<string, any> = {
@@ -217,8 +217,8 @@ function App() {
                 {!error && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>}
                 <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${error ? 'bg-red-500' : 'bg-green-500'}`}></span>
               </span>
-              <span className={`text-sm font-semibold ${error ? 'text-red-600' : 'text-gray-600'}`}>
-                {error ? 'Error de conexión' : 'Sistema Online'}
+              <span className={`text-sm font-semibold ${error ? 'text-red-600' : isLoading ? 'text-purple-600' : 'text-gray-600'}`}>
+                {isLoading ? 'Conectando...' : error ? 'Error de conexión' : 'Sistema Online'}
               </span>
             </div>
             <img 
