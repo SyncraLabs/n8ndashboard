@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/n8n-proxy/:match*",
+      "destination": "https://n8n.srv1256702.hstgr.cloud/:match*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
